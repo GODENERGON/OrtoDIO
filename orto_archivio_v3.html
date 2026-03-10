@@ -2089,21 +2089,19 @@ async function sbFetch(method, path, body) {
       },
       body: body ? JSON.stringify(body) : undefined
     });
-    if (!res.ok) return null;
+    if (!res.ok) { console.error('Supabase error', res.status, await res.text()); return null; }
     if (method === 'GET') return await res.json();
     return true;
-  } catch(e) { return null; }
+  } catch(e) { console.error('sbFetch exception', e); return null; }
 }
 
 async function loadAllDiary() {
   setDbStatus('loading');
   if (!SUPABASE_URL.startsWith('https')) { setDbStatus('offline'); return; }
-  const rows = await sbFetch('GET', 'diary?select=*');
+  const rows = await sbFetch('GET', 'diary?select=entry_key,data');
   if (!rows) { setDbStatus('error'); return; }
   rows.forEach(r => {
-    const key = r.variety_id + '_' + r.location_id + '_' + r.year;
-    diary[key] = { semina:r.semina, trapianto:r.trapianto, fioritura:r.fioritura,
-      raccolta:r.raccolta, resa:r.resa, val:r.val, kg:r.kg, prob:r.prob, note:r.note };
+    if (r.entry_key && r.data) diary[r.entry_key] = r.data;
   });
   window._sbReady = true;
   setDbStatus('ok');
@@ -2452,12 +2450,11 @@ function saveDiary(key, field, value) {
   if (!window._sbReady) return;
   clearTimeout(_saveTimers[key]);
   _saveTimers[key] = setTimeout(async () => {
-    // key = variety_id_location_id_year
-    const parts = key.split('_');
-    const year = parseInt(parts[parts.length - 1]);
-    const location_id = parts[parts.length - 2];
-    const variety_id = parts.slice(0, parts.length - 2).join('_');
-    const ok = await sbFetch('POST', 'diary', Object.assign({ variety_id, location_id, year }, diary[key]));
+    const ok = await sbFetch('POST', 'diary', {
+      entry_key: key,
+      user_id: 'default',
+      data: diary[key]
+    });
     setDbStatus(ok ? 'saved' : 'error');
     if (ok) setTimeout(function() { setDbStatus('ok'); }, 1800);
   }, 900);
