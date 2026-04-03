@@ -2113,43 +2113,54 @@ const DB = [
 ];
 
 // =================================================
-// CONFIGURAZIONE SUPABASE
-// Vai su supabase.com -> Settings -> API
-// e sostituisci i valori placeholder qui sotto.
+// CONFIGURAZIONE POCKETBASE (NUC locale via Tailscale)
 // =================================================
-const SUPABASE_URL = 'https://grilyafwumlbhbjrjrwb.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdyaWx5YWZ3dW1sYmhianJqcndiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxMTY0OTIsImV4cCI6MjA4ODY5MjQ5Mn0.uGBzSI6iGiM7ClyTkt-Mr8vsP7l3vT29yhJs534svFA';
+const PB_URL = 'http://100.125.133.96:8090';
 
-async function sbFetch(method, path, body) {
-  if (!SUPABASE_URL.startsWith('https')) return null;
+async function pbFetch(method, entry_key, body) {
   try {
-    const res = await fetch(SUPABASE_URL + '/rest/v1/' + path, {
-      method,
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_KEY,
-        'Content-Type': 'application/json',
-        'Prefer': method === 'POST' ? 'resolution=merge-duplicates,return=minimal' : 'return=minimal'
-      },
-      body: body ? JSON.stringify(body) : undefined
-    });
-    if (!res.ok) { console.error('Supabase error', res.status, await res.text()); return null; }
-    if (method === 'GET') return await res.json();
-    return true;
-  } catch(e) { console.error('sbFetch exception', e); return null; }
+    if (method === 'GET') {
+      const res = await fetch(`${PB_URL}/api/collections/diary/records?filter=(entry_key='${encodeURIComponent(entry_key)}')&perPage=500`);
+      if (!res.ok) { console.error('PocketBase error', res.status, await res.text()); return null; }
+      return await res.json();
+    }
+    // POST: upsert — cerca record esistente, poi aggiorna o crea
+    const checkRes = await fetch(`${PB_URL}/api/collections/diary/records?filter=(entry_key='${encodeURIComponent(body.entry_key)}')`);
+    const checkData = await checkRes.json();
+    const existing = checkData.items && checkData.items[0];
+    if (existing) {
+      const res = await fetch(`${PB_URL}/api/collections/diary/records/${existing.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: body.data })
+      });
+      if (!res.ok) { console.error('PocketBase PATCH error', res.status, await res.text()); return null; }
+      return true;
+    } else {
+      const res = await fetch(`${PB_URL}/api/collections/diary/records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) { console.error('PocketBase POST error', res.status, await res.text()); return null; }
+      return true;
+    }
+  } catch(e) { console.error('pbFetch exception', e); return null; }
 }
 
 async function loadAllDiary() {
   setDbStatus('loading');
-  if (!SUPABASE_URL.startsWith('https')) { setDbStatus('offline'); return; }
-  const rows = await sbFetch('GET', 'diary?select=entry_key,data');
-  if (!rows) { setDbStatus('error'); return; }
-  rows.forEach(r => {
-    if (r.entry_key && r.data) diary[r.entry_key] = r.data;
-  });
-  window._sbReady = true;
-  setDbStatus('ok');
-  if (currentVariety) buildDiary(currentVariety);
+  try {
+    const res = await fetch(`${PB_URL}/api/collections/diary/records?perPage=500`);
+    if (!res.ok) { setDbStatus('error'); return; }
+    const data = await res.json();
+    (data.items || []).forEach(r => {
+      if (r.entry_key && r.data) diary[r.entry_key] = r.data;
+    });
+    window._sbReady = true;
+    setDbStatus('ok');
+    if (currentVariety) buildDiary(currentVariety);
+  } catch(e) { console.error('loadAllDiary exception', e); setDbStatus('error'); }
 }
 
 function setDbStatus(state) {
@@ -2494,7 +2505,7 @@ function saveDiary(key, field, value) {
   if (!window._sbReady) return;
   clearTimeout(_saveTimers[key]);
   _saveTimers[key] = setTimeout(async () => {
-    const ok = await sbFetch('POST', 'diary', {
+    const ok = await pbFetch('POST', key, {
       entry_key: key,
       user_id: 'default',
       data: diary[key]
